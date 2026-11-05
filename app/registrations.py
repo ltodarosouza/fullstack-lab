@@ -41,3 +41,16 @@ def register(event_id: int, data: RegistrationInput, session: Session = Depends(
     session.add(Registration(event_id=event_id, user_id=data.user_id))
     session.commit()
     return {"event_id": event_id, "user_id": data.user_id}
+
+
+@router.delete("/events/{event_id}/registrations/{user_id}", status_code=204)
+def unregister(event_id: int, user_id: int, session: Session = Depends(get_session)):
+    registration = session.scalar(
+        select(Registration).where(
+            Registration.event_id == event_id, Registration.user_id == user_id
+        )
+    )
+    if registration is None:
+        raise HTTPException(status_code=404, detail="Inscrição não encontrada")
+    session.delete(registration)
+    session.commit()
