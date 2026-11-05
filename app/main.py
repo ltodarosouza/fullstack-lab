@@ -2,8 +2,15 @@
 
 from datetime import date
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.database import Base, make_engine
+from app.db_session import get_session
+from app.models import Event, Registration
+from app.registrations import router as registrations_router
 
 
 class EventInput(BaseModel):
@@ -14,30 +21,46 @@ class EventInput(BaseModel):
     capacity: int = Field(gt=0)
 
 
-def create_app() -> FastAPI:
-    """Cria uma API com dados isolados para cada execução ou teste."""
+def serialize_event(session: Session, event: Event) -> dict:
+    taken = session.scalar(
+        select(func.count()).select_from(Registration).where(Registration.event_id == event.id)
+    )
+    return {
+        "id": event.id,
+        "title": event.title,
+        "date": event.date.isoformat(),
+        "capacity": event.capacity,
+        "available_slots": event.capacity - taken,
+    }
+
+
+def create_app(database_url: str = "sqlite://") -> FastAPI:
+    """Cria uma API; sem URL, usa um banco em memória isolado."""
     app = FastAPI(title="Eventos do Trilha")
-    events: dict[int, dict] = {}
+    app.state.engine = make_engine(database_url)
+    Base.metadata.create_all(app.state.engine)
+    app.include_router(registrations_router)
 
     @app.get("/events")
-    def list_events():
-        return list(events.values())
+    def list_events(session: Session = Depends(get_session)):
+        events = session.scalars(select(Event).order_by(Event.id)).all()
+        return [serialize_event(session, event) for event in events]
 
     @app.get("/events/{event_id}")
-    def get_event(event_id: int):
-        event = events.get(event_id)
+    def get_event(event_id: int, session: Session = Depends(get_session)):
+        event = session.get(Event, event_id)
         if event is None:
             raise HTTPException(status_code=404, detail="Evento não encontrado")
-        return event
+        return serialize_event(session, event)
 
     @app.post("/events", status_code=201)
-    def create_event(data: EventInput):
-        event_id = max(events, default=0) + 1
-        event = {"id": event_id, **data.model_dump(mode="json")}
-        events[event_id] = event
-        return event
+    def create_event(data: EventInput, session: Session = Depends(get_session)):
+        event = Event(**data.model_dump())
+        session.add(event)
+        session.commit()
+        return serialize_event(session, event)
 
     return app
 
 
-app = create_app()
+app = create_app("sqlite:///events.db")
